@@ -1,50 +1,63 @@
 // Este é um arquivo de função serverless para o Vercel (Node.js).
 // Ele centraliza toda a lógica do jogo "Encontre as Palavras" e trata a segurança CORS.
 
+// ATENÇÃO: Em um ambiente Serverless real, o 'gameState' não persiste entre chamadas.
+// Ele é mantido aqui APENAS para simulação. Em produção, você usaria um banco de dados (como Redis ou Firestore).
+
+let gameState = {
+    status: 'INITIAL', // INITIAL, CONFIG, PLAYING, FINISHED
+    players: [],
+    board: [],
+    currentPlayerIndex: 0,
+    startTime: null,
+    gameDuration: 0,
+    gameId: Math.random().toString(36).substring(2, 9),
+    pairsFound: 0,
+    maxPairs: 8, 
+    emojis: ["🍎", "🍉", "🍇", "🍓", "🍍", "🥭", "🥝", "🥥", "🍋", "🍒", "🍊", "🌶️", "🍄", "🥕", "🥑", "🥦"],
+};
+
 module.exports = (req, res) => {
     // Domínio permitido para acesso à API
     const ALLOWED_ORIGIN = 'https://playjogosgratis.com';
     const requestOrigin = req.headers.origin;
 
     // --- Controle de CORS e Segurança ---
-    const setCorsHeaders = () => {
-        if (requestOrigin === ALLOWED_ORIGIN) {
+    const setCorsHeaders = (allow) => {
+        if (allow) {
             res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
         } else {
-            // Se a origem não for a permitida, nega o acesso (embora o browser possa bloquear antes)
-            // Em produção, você pode remover esta linha para não dar dicas ao invasor.
-            res.setHeader('Access-Control-Allow-Origin', 'null');
+            // Se a origem não for a permitida, não define o header, forçando o bloqueio pelo browser
+            // para requisições que não sejam GET/POST simples.
+            // Para GET/POST simples, o bloqueio deve ser feito pela lógica abaixo.
+            res.setHeader('Access-Control-Allow-Origin', 'null'); 
         }
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     };
 
-    setCorsHeaders();
-
     // Tratamento da requisição OPTIONS (pré-voo CORS)
     if (req.method === 'OPTIONS') {
+        setCorsHeaders(requestOrigin === ALLOWED_ORIGIN);
         res.writeHead(204);
         res.end();
         return;
     }
 
-    // --- Configurações e Estado Centralizado do Jogo ---
+    // --- Bloqueio de Acesso Imediato para Origens Não Permitidas ---
+    if (requestOrigin !== ALLOWED_ORIGIN) {
+        setCorsHeaders(false);
+        console.error(`Acesso bloqueado. Origem não permitida: ${requestOrigin}`);
+        return res.status(403).json({ 
+            error: `Acesso negado. A lógica da API só pode ser acessada de ${ALLOWED_ORIGIN}.` 
+        });
+    }
 
-    // Estado do jogo (usando escopo global para simular um estado, em produção precisaria de DB/Redis)
-    let gameState = {
-        status: 'INITIAL', // INITIAL, CONFIG, PLAYING, FINISHED
-        players: [],
-        board: [],
-        currentPlayerIndex: 0,
-        startTime: null,
-        gameDuration: 0,
-        gameId: Math.random().toString(36).substring(2, 9), // ID único para a sessão
-        pairsFound: 0,
-        maxPairs: 8, // Exemplo: 8 pares
-        emojis: ["🍎", "🍉", "🍇", "🍓", "🍍", "🥭", "🥝", "🥥", "🍋", "🍒", "🍊", "🌶️", "🍄", "🥕", "🥑", "🥦"], // 8 pares = 16 itens
-    };
+    // Se chegou aqui, a origem é permitida
+    setCorsHeaders(true);
 
-    // Reseta o estado do jogo
+
+    // --- Funções de Lógica (Centralizadas e Protegidas) ---
     const resetState = () => {
         gameState = {
             status: 'INITIAL',
@@ -60,7 +73,6 @@ module.exports = (req, res) => {
         };
     };
 
-    // Lógica para embaralhar a matriz do tabuleiro
     const shuffleArray = (array) => {
         for (let i = array.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
@@ -69,7 +81,6 @@ module.exports = (req, res) => {
         return array;
     };
 
-    // Cria o tabuleiro com pares de emojis
     const createBoard = () => {
         const selectedEmojis = shuffleArray(gameState.emojis).slice(0, gameState.maxPairs);
         let tiles = [...selectedEmojis, ...selectedEmojis];
@@ -83,32 +94,22 @@ module.exports = (req, res) => {
         }));
     };
 
-    // Função de Cálculo de QI (QI = (Acertos / Tempo Médio de Resposta) * Coeficiente)
     const calculateIQ = (playerStats, totalTime) => {
         const { correctAttempts, totalAttempts, responseTimes } = playerStats;
         
         if (correctAttempts === 0) return 0;
 
         const totalResponseTime = responseTimes.reduce((sum, time) => sum + time, 0);
-        const averageResponseTime = totalResponseTime / totalAttempts; // Tempo médio por tentativa
+        const averageResponseTime = totalResponseTime / (totalAttempts || 1); // Evita divisão por zero
 
-        // Coeficiente de Acerto: Prioriza acerto e velocidade
-        const accuracyFactor = correctAttempts / gameState.maxPairs; // Acertos pelo máximo possível
-
-        // Fator de Velocidade: Inverso do tempo médio. Quanto menor o tempo, maior o QI.
-        // Adiciona 1 para evitar divisão por zero.
-        const speedFactor = 1000 / (averageResponseTime + 1); 
-
-        // QI Base = (Acertos x 1000) / (Tempo Total do Jogador)
-        // Uma fórmula simples e divertida para crianças:
-        let qi = Math.round((correctAttempts * 10000) / (totalTime * 0.1 + 1)); // Fator de tempo menor
+        // QI Base = (Acertos * 10000) / (Tempo Total do Jogador + 1)
+        let qi = Math.round((correctAttempts * 10000) / (totalTime * 0.1 + 1)); 
         
-        return Math.min(150, Math.max(50, qi)); // Mantém o QI em um intervalo razoável (50-150)
+        return Math.min(150, Math.max(50, qi)); 
     };
 
 
-    // --- Rotas da API ---
-
+    // --- Rotas da API (Processamento) ---
     const { url } = req;
     const action = new URL(url, `http://${req.headers.host}`).searchParams.get('action');
 
@@ -122,7 +123,6 @@ module.exports = (req, res) => {
 
                 resetState();
                 
-                // Inicializa jogadores
                 for (let i = 1; i <= playersCount; i++) {
                     gameState.players.push({
                         id: i,
@@ -130,19 +130,17 @@ module.exports = (req, res) => {
                         score: 0,
                         pairsFound: 0,
                         totalTimeMs: 0,
-                        correctAttempts: 0, // Tentativas que resultaram em acerto
-                        totalAttempts: 0, // Total de cliques (para QI)
-                        responseTimes: [], // Tempo de resposta de cada jogada
+                        correctAttempts: 0,
+                        totalAttempts: 0,
+                        responseTimes: [],
                         currentTurnStartTime: Date.now(),
                     });
                 }
 
-                // Cria o tabuleiro e inicia o jogo
                 gameState.board = createBoard();
                 gameState.startTime = Date.now();
                 gameState.status = 'PLAYING';
                 
-                // Retorna o estado inicial do jogo e tabuleiro
                 return res.status(200).json({ 
                     success: true, 
                     gameState: {
@@ -184,7 +182,6 @@ module.exports = (req, res) => {
 
                 const flippedTiles = gameState.board.filter(t => t.isFlipped && !t.isMatched);
 
-                // --- Lógica de Acerto ou Erro ---
                 let match = false;
                 let isGameOver = false;
                 let sound = 'click';
@@ -192,17 +189,15 @@ module.exports = (req, res) => {
                 if (flippedTiles.length === 2) {
                     const [tile1, tile2] = flippedTiles;
                     
-                    // Calcula o tempo de resposta da jogada
                     const responseTime = Date.now() - player.currentTurnStartTime;
                     player.responseTimes.push(responseTime);
-                    player.totalTimeMs += (Date.now() - player.currentTurnStartTime);
+                    player.totalTimeMs += responseTime;
                     
                     if (tile1.emoji === tile2.emoji) {
-                        // Acerto
                         tile1.isMatched = true;
                         tile2.isMatched = true;
-                        tile1.isFlipped = true; // Mantém virada, mas agora casada
-                        tile2.isFlipped = true; // Mantém virada, mas agora casada
+                        tile1.isFlipped = true;
+                        tile2.isFlipped = true;
 
                         player.score += 10;
                         player.pairsFound++;
@@ -211,31 +206,26 @@ module.exports = (req, res) => {
                         match = true;
                         sound = 'acerto';
 
-                        // Verifica fim de jogo
                         if (gameState.pairsFound === gameState.maxPairs) {
                             gameState.status = 'FINISHED';
                             gameState.gameDuration = Date.now() - gameState.startTime;
                             isGameOver = true;
                         }
 
-                        // O jogador que acertou joga novamente
                         player.currentTurnStartTime = Date.now();
 
                     } else {
-                        // Erro: Vira as peças de volta após um pequeno atraso (simulado no cliente)
                         sound = 'erro';
                         
-                        // Passa para o próximo jogador, atualiza o tempo total do turno
+                        // Passa para o próximo jogador
                         const numPlayers = gameState.players.length;
                         gameState.currentPlayerIndex = (gameState.currentPlayerIndex + 1) % numPlayers;
                         gameState.players[gameState.currentPlayerIndex].currentTurnStartTime = Date.now();
                     }
                 } else {
-                    // Primeiro clique, atualiza o tempo de início do turno
                     player.currentTurnStartTime = Date.now();
                 }
 
-                // Retorna o estado atualizado do jogo
                 return res.status(200).json({ 
                     success: true, 
                     match: match, 
@@ -266,9 +256,9 @@ module.exports = (req, res) => {
                 gameState.status = 'FINISHED';
                 gameState.gameDuration = Date.now() - gameState.startTime;
 
-                // Prepara os resultados finais e calcula o QI
                 const finalResults = gameState.players.map(p => {
-                    const totalTime = p.totalTimeMs || (Date.now() - gameState.startTime);
+                    // O tempo total é a soma dos tempos de resposta para todas as tentativas
+                    const totalTime = p.totalTimeMs; 
                     const qi = calculateIQ(p, totalTime);
                     
                     return {
@@ -282,7 +272,6 @@ module.exports = (req, res) => {
                     };
                 });
                 
-                // Ordena por QI e depois por acertos
                 finalResults.sort((a, b) => {
                     if (b.qi !== a.qi) return b.qi - a.qi;
                     return b.pairsFound - a.pairsFound;
@@ -302,7 +291,6 @@ module.exports = (req, res) => {
             }
 
             case 'state': {
-                // Rota para o cliente obter o estado atual (útil para reconexão ou debugging)
                 return res.status(200).json({ 
                     success: true, 
                     gameState: {
