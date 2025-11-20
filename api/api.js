@@ -1,26 +1,29 @@
 // api/api.js (Hospedado em https://encontreospares-api.vercel.app/api/api)
 
-const emojis = ["🚀", "🍕", "🐶", "🎈", "😀", "😎", "🤩", "💖"]; 
-const NUM_PARES = emojis.length;
+// Palavras/Emojis usados e a SEQUÊNCIA CORRETA (ID = Posição na sequência)
+const SEQUENCIA_CORRETA = [
+    { id: 1, texto: "⭐ Cachorro" },
+    { id: 2, texto: "🍎 Maçã" },
+    { id: 3, texto: "🚀 Foguete" },
+    { id: 4, texto: "💖 Coração" },
+    { id: 5, texto: "🍕 Pizza" },
+    { id: 6, texto: "🎈 Balão" },
+];
+const NUM_PASSOS = SEQUENCIA_CORRETA.length; // Total de 6 passos.
 
-// Variável global (NÃO PERSISTENTE) para simulação de estado do jogo.
-// Em produção real, o estado seria salvo em um Redis/DB usando o ID da sessão.
-let tabuleiroAtual = [];
-let cardIdCounter = 0;
+// Variável para armazenar as palavras do jogo (embaralhadas visualmente)
+let palavrasDoJogo = []; 
 
 /**
- * Função para configurar o CORS (Cross-Origin Resource Sharing).
- * Permite apenas o domínio 'https://playjogosgratis.com' e localhost.
+ * Função para configurar o CORS (Segurança).
  */
 function setCorsHeaders(res, origin) {
     const ALLOWED_ORIGIN = 'https://playjogosgratis.com';
-    // Permite localhost para testes de desenvolvimento
     const localhostPattern = /http:\/\/localhost:\d+/; 
 
     if (origin === ALLOWED_ORIGIN || localhostPattern.test(origin)) {
         res.setHeader('Access-Control-Allow-Origin', origin);
     } else {
-        // Se a origem não for permitida, o navegador não terá acesso aos dados
         res.setHeader('Access-Control-Allow-Origin', 'null');
     }
 
@@ -29,36 +32,42 @@ function setCorsHeaders(res, origin) {
 }
 
 /**
- * Função para gerar um novo tabuleiro embaralhado.
+ * Embaralha a lista de palavras para a exibição no tabuleiro.
  */
-function gerarNovoTabuleiro() {
-    tabuleiroAtual = [];
-    cardIdCounter = 0;
-    let todosEmojis = [...emojis, ...emojis];
+function gerarPalavrasEmbaralhadas() {
+    // Adiciona palavras 'distratoras' para um tabuleiro maior (ex: 4x4)
+    const distratores = [
+        { id: 90, texto: "🌳 Árvore" },
+        { id: 91, texto: "🚗 Carro" },
+        { id: 92, texto: "🏠 Casa" },
+        { id: 93, texto: "🌙 Lua" },
+        { id: 94, texto: "💻 PC" },
+        { id: 95, texto: "⚽ Bola" },
+    ];
     
-    todosEmojis.sort(() => Math.random() - 0.5); 
-
-    for (let i = 0; i < todosEmojis.length; i++) {
-        const pairId = Math.floor(i / 2) + 1; 
-        tabuleiroAtual.push({
-            id: ++cardIdCounter, 
-            pairId: pairId,      
-            emoji: todosEmojis[i],
-            matched: false
-        });
-    }
-    return tabuleiroAtual;
+    // Total de 12 blocos (6 da sequência + 6 distratores)
+    let todasPalavras = [...SEQUENCIA_CORRETA, ...distratores];
+    
+    // Embaralha
+    todasPalavras.sort(() => Math.random() - 0.5); 
+    
+    return todasPalavras;
 }
 
 /**
  * Fórmula de cálculo de QI (Quociente de Inteligência) baseado em gamificação.
- * QI = (Sequências Corretas * Constante de Bônus) / (Tempo em Segundos + Penalidade de Erros)
- * A constante 5000 e o peso do erro (10) são arbitrários para criar uma métrica.
+ * Valor alto de QI se acertos for alto e tempo for baixo.
  */
 function calcularQI(sequenciasCorretas, tempoFinalSegundos, totalErros) {
-    // Evita divisão por zero se tempo for 0 e erros for 0
-    const divisor = tempoFinalSegundos + (totalErros * 10) + 1; 
-    const qi = (sequenciasCorretas * 5000) / divisor;
+    // Quanto maior o QI, melhor. Erro e Tempo diminuem o QI.
+    const CONSTANTE_BONUS = 10000;
+    const TEMPO_MINIMO = 1; // Para evitar divisão por zero
+    
+    // Penalidade por erro é maior (10x o tempo)
+    const penalidade = (totalErros * 10) + TEMPO_MINIMO;
+    
+    // QI = (Acertos * Bônus) / (Tempo + Penalidade)
+    const qi = (sequenciasCorretas * CONSTANTE_BONUS) / (tempoFinalSegundos + penalidade);
     
     return qi;
 }
@@ -68,7 +77,7 @@ function calcularQI(sequenciasCorretas, tempoFinalSegundos, totalErros) {
  * Função principal para Vercel Serverless.
  */
 export default (req, res) => {
-    // 1. Configura o CORS e trata OPTIONS
+    // 1. Configura o CORS
     const origin = req.headers.origin;
     setCorsHeaders(res, origin);
 
@@ -82,58 +91,54 @@ export default (req, res) => {
     const { action } = req.query;
 
     if (action === 'start') {
-        // Reinicia e embaralha o tabuleiro na API
-        const cartas = gerarNovoTabuleiro();
+        // Gera o tabuleiro embaralhado e o salva no estado simulado
+        palavrasDoJogo = gerarPalavrasEmbaralhadas();
         
-        // Em um ambiente real, o tabuleiroAtual seria salvo na sessão/BD aqui.
-        return res.status(200).json({ cartas: cartas });
+        return res.status(200).json({ palavras: palavrasDoJogo, totalPassos: NUM_PASSOS });
 
     } else if (action === 'check' && req.method === 'POST') {
-        // Verifica a jogada
-        const { cardId1, cardId2, totalErros, tempoFinal } = req.body;
+        // Verifica o clique na sequência
+        const { wordId, passoAtual, totalErros, tempoFinal } = req.body;
         
-        if (!cardId1 || !cardId2) {
-             return res.status(400).json({ error: "IDs de cartas ausentes." });
-        }
-
-        // Simulação de busca no estado (usando o estado global não persistente)
-        // Em um ambiente real, essa busca falharia se o estado não fosse persistido.
-        const cartasJogadas = tabuleiroAtual.filter(c => c.id === parseInt(cardId1) || c.id === parseInt(cardId2));
+        const idClicado = parseInt(wordId);
         
-        if (cartasJogadas.length !== 2) {
-            // Isso indica que o estado da API foi perdido (problema em Serverless)
-            // Ou o frontend está enviando IDs inválidos.
-             return res.status(400).json({ error: "Cartas não encontradas no estado atual do jogo." });
-        }
+        // O ID correto deve ser igual ao passo atual na sequência (1, 2, 3...)
+        const correto = idClicado === passoAtual;
 
-        const match = cartasJogadas[0].pairId === cartasJogadas[1].pairId;
-
-        if (match) {
-            // Marca como encontrado
-            cartasJogadas.forEach(c => c.matched = true);
-        }
-
-        const paresEncontrados = tabuleiroAtual.filter(c => c.matched).length / 2;
-        const jogoFinalizado = paresEncontrados === NUM_PARES;
-
-        if (jogoFinalizado) {
-            const sequenciasCorretas = NUM_PARES;
-            const qi = calcularQI(sequenciasCorretas, tempoFinal, totalErros);
-
+        // Se errou, calcula o QI imediatamente e finaliza o jogo
+        if (!correto) {
+            const sequenciasCorretas = passoAtual - 1; // O passo anterior foi o último acerto
+            const qi = calcularQI(sequenciasCorretas, tempoFinal, totalErros + 1); // +1 erro atual
+            
             return res.status(200).json({ 
-                match, 
+                correto: false, 
                 jogoFinalizado: true,
-                sequenciasCorretas,
+                sequenciasCorretas: sequenciasCorretas,
                 tempoFinalSegundos: tempoFinal,
-                qi
+                qi: qi
             });
         }
         
-        // Se não for um match e for Jogo da Memória, apenas retorna o resultado
-        // Se fosse o "Encontre as Palavras" e o erro finalizasse, a lógica de QI viria aqui.
-        return res.status(200).json({ match, jogoFinalizado: false });
+        // Se acertou, verifica se a sequência terminou
+        const jogoFinalizado = passoAtual === NUM_PASSOS;
+
+        if (jogoFinalizado) {
+            const sequenciasCorretas = NUM_PASSOS;
+            // Cálculo de QI (0 erros, tempo baixo = QI alto)
+            const qi = calcularQI(sequenciasCorretas, tempoFinal, totalErros); 
+            
+            return res.status(200).json({ 
+                correto: true, 
+                jogoFinalizado: true,
+                sequenciasCorretas: sequenciasCorretas,
+                tempoFinalSegundos: tempoFinal,
+                qi: qi
+            });
+        }
+        
+        // Se acertou mas não finalizou
+        return res.status(200).json({ correto: true, jogoFinalizado: false });
     }
 
-    // Se a ação não for reconhecida ou o método for inválido
     return res.status(404).json({ error: "Ação não encontrada ou método inválido." });
 };
