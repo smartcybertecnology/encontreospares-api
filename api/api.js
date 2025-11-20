@@ -2,26 +2,29 @@
 
 // --------------------------------------------------------------------------------
 // Configuração de Segurança e CORS
-// O domínio enviado pelo navegador é APENAS "https://playjogosgratis.com"
 // --------------------------------------------------------------------------------
 
-const ALLOWED_ORIGIN = 'https://playjogosgratis.com'; 
-const JOGOS_COMPLEMENTARES = ["😎", "🤩", "🚀", "🍕", "🐶", "🎈", "💖", "🤖"]; 
+const ALLOWED_ORIGIN = 'https://playjogosgratis.com'; // Domínio permitido
+const JOGOS_COMPLEMENTARES = ["😎", "🤩", "🚀", "🍕", "🐶", "🎈", "💖", "🤖"]; // Emojis para o jogo (8 pares = 16 cartas)
 
-// Variáveis de estado do jogo (aqui ou importadas)
+// --------------------------------------------------------------------------------
+// Lógica do Jogo Centralizada (Variáveis e Funções Utilitárias no Servidor)
+// --------------------------------------------------------------------------------
 let gameState = {
     jogadores: [],
     pares: [],
-    cartoesVirados: [],
+    cartoesVirados: [], // Array de índices
     paresEncontrados: 0,
     jogadorAtualIndex: 0,
-    tempoTotalGlobal: 0,
+    tempoTotalGlobal: 0, // Acumulado de segundos
     jogoIniciado: false,
     tempoInicio: 0,
 };
 
-// ... Funções utilitárias (shuffle, criarJogador, calcularQI) ...
-
+/**
+ * Função utilitária para embaralhar um array (Algoritmo de Fisher-Yates).
+ * @param {Array} array
+ */
 const shuffle = (array) => {
     let currentIndex = array.length, randomIndex;
     while (currentIndex !== 0) {
@@ -34,85 +37,105 @@ const shuffle = (array) => {
     return array;
 };
 
+/**
+ * Gera um objeto de jogador.
+ * @param {number} id
+ * @returns {object}
+ */
 const criarJogador = (id) => ({
     id: id,
     nome: `Jogador ${id}`,
     acertos: 0,
-    tempoResposta: 0,
-    tempoFinal: 0,
+    tempoResposta: 0, 
+    tempoFinal: 0, 
     ativo: id === 1,
 });
 
+/**
+ * Função para calcular o QI baseado no desempenho.
+ * QI = 100 + (acertos * 10) - (tempoTotal / 10). (Fórmula infantil simplificada)
+ * @param {number} acertos
+ * @param {number} tempoTotal (em segundos)
+ * @returns {number} QI calculado.
+ */
 const calcularQI = (acertos, tempoTotal) => {
     let qi = 100 + (acertos * 10) - (tempoTotal / 10);
     return Math.max(70, qi); 
 };
 
-
 // --------------------------------------------------------------------------------
 // Funções da API para o Vercel
 // --------------------------------------------------------------------------------
 
+// A função `handler` é o ponto de entrada para o Vercel
 module.exports = (req, res) => {
     const origin = req.headers.origin;
 
-    // 1. Tratamento de CORS
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-    // Responde ao OPTIONS (pré-voo) para CORS
+    // 1. TRATAMENTO DE CORS E BLOQUEIO DE ORIGEM
+    
+    // Responde ao OPTIONS (pré-voo) para CORS 
     if (req.method === 'OPTIONS') {
         if (origin === ALLOWED_ORIGIN) {
-             res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
-             res.writeHead(204);
-             res.end();
+            // Permite o pré-voo (preflight) se a origem for correta
+            res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
+            res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+            res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+            res.writeHead(204);
+            res.end();
+            return;
         } else {
              // Bloqueia OPTIONS de outras origens
              res.writeHead(403);
              res.end();
+             return;
         }
-        return;
     }
-    
-    // 2. Verifica a Origem da Requisição
+
+    // BLOQUEIO PARA MÉTODOS GET/POST
     if (origin !== ALLOWED_ORIGIN) {
-        // Bloqueia e retorna uma mensagem de erro simples
+        // Bloqueia: Não define o cabeçalho 'Access-Control-Allow-Origin'
+        // e retorna um script de erro que não contém a lógica do jogo
         res.setHeader('Content-Type', 'application/javascript');
         res.send(`
             console.error("Acesso bloqueado! Lógica da API só pode ser acessada de ${ALLOWED_ORIGIN}.");
+            // Define as funções como nulas para evitar erros no navegador
+            window.API_INICIAR_JOGO = () => { console.error("Acesso negado."); return Promise.resolve({}); };
+            window.API_VIRAR_CARTAO = () => { console.error("Acesso negado."); return Promise.resolve({}); };
+            window.API_FINALIZAR_JOGO = () => { console.error("Acesso negado."); return Promise.resolve({}); };
         `);
-        return;
+        return; // Termina a execução
     }
 
-    // Se chegou aqui, a origem é a permitida. Define o cabeçalho final.
+    // 2. ORIGEM PERMITIDA: Retorna o Script Completo
     res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
     res.setHeader('Content-Type', 'application/javascript');
+    
+    // As funções utilitárias precisam ter seus corpos injetados como strings
+    const shuffleString = shuffle.toString();
+    const criarJogadorString = criarJogador.toString();
+    const calcularQIString = calcularQI.toString();
 
-    // 3. Define e envia as funções globais (Lógica do Jogo)
     const apiCode = `
         // --------------------------------------------------------------------------------
-        // Lógica do Jogo (Protegida)
+        // Lógica do Jogo (Injetada no Navegador)
         // --------------------------------------------------------------------------------
         
-        // Define o estado do jogo e as funções utilitárias no escopo do navegador
-        const gameState = { ...window.gameState, ...${JSON.stringify(gameState)} };
+        // Variáveis de Jogo
         const JOGOS_COMPLEMENTARES = ${JSON.stringify(JOGOS_COMPLEMENTARES)};
-        
-        // As funções shuffle, criarJogador e calcularQI devem ser replicadas aqui, 
-        // ou a API deve retornar as strings completas delas. 
-        // Para simplificar, vou re-incluir as funções simples aqui dentro.
-        
-        const criarJogador = ${criarJogador.toString()};
-        const shuffle = ${shuffle.toString()};
-        const calcularQI = ${calcularQI.toString()};
+        let gameState = ${JSON.stringify(gameState)}; 
 
-        // Funções de Comunicação
+        // Funções Utilitárias (Injetadas)
+        const shuffle = ${shuffleString};
+        const criarJogador = ${criarJogadorString};
+        const calcularQI = ${calcularQIString};
+
+        /**
+         * Inicializa o estado do jogo e retorna os pares embaralhados.
+         */
         window.API_INICIAR_JOGO = async (numJogadores) => {
-            // Lógica de inicialização segura
             const todosPares = [...JOGOS_COMPLEMENTARES, ...JOGOS_COMPLEMENTARES];
             gameState.pares = shuffle(todosPares);
             gameState.jogadores = Array.from({ length: numJogadores }, (_, i) => criarJogador(i + 1));
-            // ... (restante da lógica de inicialização de estado)
             gameState.cartoesVirados = [];
             gameState.paresEncontrados = 0;
             gameState.jogadorAtualIndex = 0;
@@ -126,8 +149,18 @@ module.exports = (req, res) => {
             };
         };
 
-        window.API_VIRAR_CARTAO = async (indexCartao, tempoAtual) => {
-            if (!gameState.jogoIniciado || gameState.cartoesVirados.length >= 2 || gameState.cartoesVirados.includes(indexCartao)) {
+        /**
+         * Tenta virar um cartão e checa o par.
+         */
+        window.API_VIRAR_CARTAO = async (indexCartao) => {
+             if (!gameState.jogoIniciado || gameState.cartoesVirados.length >= 2) {
+                return { 
+                    match: false, 
+                    cartoesVirados: gameState.cartoesVirados 
+                };
+            }
+            
+            if (gameState.cartoesVirados.includes(indexCartao)) {
                 return { 
                     match: false, 
                     cartoesVirados: gameState.cartoesVirados 
@@ -140,11 +173,11 @@ module.exports = (req, res) => {
                 const [idx1, idx2] = gameState.cartoesVirados;
                 const emoji1 = gameState.pares[idx1];
                 const emoji2 = gameState.pares[idx2];
-                let match = false;
                 
                 if (emoji1 === emoji2) {
-                    match = true;
+                    // ACERTOU O PAR
                     gameState.paresEncontrados++;
+                    
                     const jogador = gameState.jogadores[gameState.jogadorAtualIndex];
                     jogador.acertos++;
                     
@@ -159,16 +192,12 @@ module.exports = (req, res) => {
                         jogadores: gameState.jogadores
                     };
                 } else {
-                    match = false;
-                    
+                    // ERROU O PAR - Passa a vez
                     gameState.jogadorAtualIndex = (gameState.jogadorAtualIndex + 1) % gameState.jogadores.length;
                     gameState.jogadores.forEach((j, i) => j.ativo = (i === gameState.jogadorAtualIndex));
                     
                     const tempVirados = gameState.cartoesVirados;
-                    
-                    setTimeout(() => {
-                        gameState.cartoesVirados = [];
-                    }, 1500); 
+                    gameState.cartoesVirados = []; 
 
                     return {
                         match: false,
@@ -178,6 +207,7 @@ module.exports = (req, res) => {
                     };
                 }
             } else {
+                // Primeiro cartão virado
                 return { 
                     match: false, 
                     cartoesVirados: gameState.cartoesVirados 
@@ -185,18 +215,20 @@ module.exports = (req, res) => {
             }
         };
 
+        /**
+         * Calcula os resultados finais, o QI, e finaliza o jogo.
+         */
         window.API_FINALIZAR_JOGO = async (tempoTotalSegundos) => {
-            // ... (Lógica de Finalização e Cálculo de QI)
             gameState.jogoIniciado = false;
             gameState.tempoTotalGlobal = tempoTotalSegundos;
-            
+
             const resultadosFinais = gameState.jogadores.map(j => {
                 const qiCalculado = calcularQI(j.acertos, gameState.tempoTotalGlobal);
                 
                 return {
                     nome: j.nome,
                     acertos: j.acertos,
-                    tempo: 'N/A (Tempo Global)',
+                    tempo: 'N/A (Tempo Global)', 
                     qiCalculado: qiCalculado
                 };
             });
@@ -209,8 +241,7 @@ module.exports = (req, res) => {
                 tempoTotal: \`\${minutos}:\${segundos}\`
             };
         };
-        
     `;
-    // Enviando o código JS
+
     res.send(apiCode);
 };
