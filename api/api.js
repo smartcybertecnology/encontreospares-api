@@ -1,231 +1,327 @@
-// api/api.js - Vercel Serverless Function (Node.js)
-
-// --------------------------------------------------------------------------------
-// Configuração de Segurança e CORS
-// --------------------------------------------------------------------------------
-
-// Domínio ÚNICO PERMITIDO para acesso à lógica do jogo
-const ALLOWED_ORIGIN = 'https://playjogosgratis.com'; 
-const JOGOS_COMPLEMENTARES = ["😎", "🤩", "🚀", "🍕", "🐶", "🎈", "💖", "🤖"]; // Emojis para o jogo (8 pares)
-
-// --------------------------------------------------------------------------------
-// Lógica do Jogo Centralizada (Variáveis e Funções Utilitárias no Servidor)
-// --------------------------------------------------------------------------------
-
-// Esta cópia serve apenas para ser injetada como estado inicial.
-let initialGameState = { 
-    jogadores: [],
-    pares: [],
-    cartoesVirados: [], 
-    paresEncontrados: 0,
-    jogadorAtualIndex: 0,
-    tempoTotalGlobal: 0,
-    jogoIniciado: false,
-    tempoInicio: 0,
-};
-
-/** Função utilitária para embaralhar um array (Fisher-Yates). */
-const shuffle = (array) => {
-    let currentIndex = array.length, randomIndex;
-    while (currentIndex !== 0) {
-        randomIndex = Math.floor(Math.random() * currentIndex);
-        currentIndex--;
-        [array[currentIndex], array[randomIndex]] = [
-            array[randomIndex], array[currentIndex]
-        ];
-    }
-    return array;
-};
-
-/** Gera um objeto de jogador. */
-const criarJogador = (id) => ({
-    id: id,
-    nome: `Jogador ${id}`,
-    acertos: 0,
-    tempoResposta: 0, 
-    tempoFinal: 0, 
-    ativo: id === 1,
-});
-
-/** Função para calcular o QI baseado no desempenho. */
-const calcularQI = (acertos, tempoTotal) => {
-    // Fórmula infantil simplificada
-    let qi = 100 + (acertos * 10) - (tempoTotal / 10);
-    return Math.max(70, qi); 
-};
-
-// --------------------------------------------------------------------------------
-// Handler da Função Serverless
-// --------------------------------------------------------------------------------
+// Este é um arquivo de função serverless para o Vercel (Node.js).
+// Ele centraliza toda a lógica do jogo "Encontre as Palavras" e trata a segurança CORS.
 
 module.exports = (req, res) => {
-    const origin = req.headers.origin;
+    // Domínio permitido para acesso à API
+    const ALLOWED_ORIGIN = 'https://playjogosgratis.com';
+    const requestOrigin = req.headers.origin;
 
-    // --- 1. Tratamento de CORS e Bloqueio ---
-    const isOriginAllowed = origin === ALLOWED_ORIGIN;
-    
-    if (req.method === 'OPTIONS') {
-        if (isOriginAllowed) {
+    // --- Controle de CORS e Segurança ---
+    const setCorsHeaders = () => {
+        if (requestOrigin === ALLOWED_ORIGIN) {
             res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
-            res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-            res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-            res.writeHead(204);
         } else {
-             res.writeHead(403);
+            // Se a origem não for a permitida, nega o acesso (embora o browser possa bloquear antes)
+            // Em produção, você pode remover esta linha para não dar dicas ao invasor.
+            res.setHeader('Access-Control-Allow-Origin', 'null');
         }
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    };
+
+    setCorsHeaders();
+
+    // Tratamento da requisição OPTIONS (pré-voo CORS)
+    if (req.method === 'OPTIONS') {
+        res.writeHead(204);
         res.end();
         return;
     }
 
-    if (!isOriginAllowed) {
-        // Bloqueia e retorna um script vazio/de erro para origens não permitidas.
-        res.setHeader('Content-Type', 'application/javascript');
-        res.send(`
-            console.error("Acesso bloqueado! Lógica da API só pode ser acessada de ${ALLOWED_ORIGIN}.");
-            window.API_INICIAR_JOGO = window.API_VIRAR_CARTAO = window.API_FINALIZAR_JOGO = () => { console.error("Acesso negado."); return Promise.resolve({}); };
-        `);
-        return;
-    }
-    // --- Fim do Tratamento de CORS ---
+    // --- Configurações e Estado Centralizado do Jogo ---
 
-    // 2. ORIGEM PERMITIDA: Retorna o Script Completo (Lógica Injetada)
-    res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN); 
-    res.setHeader('Content-Type', 'application/javascript');
-    
-    // Injeta as funções utilitárias no script para o cliente
-    const shuffleString = shuffle.toString();
-    const criarJogadorString = criarJogador.toString();
-    const calcularQIString = calcularQI.toString();
+    // Estado do jogo (usando escopo global para simular um estado, em produção precisaria de DB/Redis)
+    let gameState = {
+        status: 'INITIAL', // INITIAL, CONFIG, PLAYING, FINISHED
+        players: [],
+        board: [],
+        currentPlayerIndex: 0,
+        startTime: null,
+        gameDuration: 0,
+        gameId: Math.random().toString(36).substring(2, 9), // ID único para a sessão
+        pairsFound: 0,
+        maxPairs: 8, // Exemplo: 8 pares
+        emojis: ["🍎", "🍉", "🍇", "🍓", "🍍", "🥭", "🥝", "🥥", "🍋", "🍒", "🍊", "🌶️", "🍄", "🥕", "🥑", "🥦"], // 8 pares = 16 itens
+    };
 
-    const apiCode = `
-        // --------------------------------------------------------------------------------
-        // Lógica do Jogo Injetada (Executada no Navegador)
-        // --------------------------------------------------------------------------------
+    // Reseta o estado do jogo
+    const resetState = () => {
+        gameState = {
+            status: 'INITIAL',
+            players: [],
+            board: [],
+            currentPlayerIndex: 0,
+            startTime: null,
+            gameDuration: 0,
+            gameId: Math.random().toString(36).substring(2, 9),
+            pairsFound: 0,
+            maxPairs: gameState.maxPairs,
+            emojis: gameState.emojis,
+        };
+    };
+
+    // Lógica para embaralhar a matriz do tabuleiro
+    const shuffleArray = (array) => {
+        for (let i = array.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [array[i], array[j]] = [array[j], array[i]];
+        }
+        return array;
+    };
+
+    // Cria o tabuleiro com pares de emojis
+    const createBoard = () => {
+        const selectedEmojis = shuffleArray(gameState.emojis).slice(0, gameState.maxPairs);
+        let tiles = [...selectedEmojis, ...selectedEmojis];
+        tiles = shuffleArray(tiles);
         
-        // Variáveis de Jogo
-        const JOGOS_COMPLEMENTARES = ${JSON.stringify(JOGOS_COMPLEMENTARES)};
-        // Define o estado do jogo globalmente no navegador, com o estado inicial.
-        window.gameState = ${JSON.stringify(initialGameState)}; 
+        return tiles.map((emoji, index) => ({
+            id: index,
+            emoji: emoji,
+            isFlipped: false,
+            isMatched: false,
+        }));
+    };
 
-        // Funções Utilitárias (Injetadas)
-        const shuffle = ${shuffleString};
-        const criarJogador = ${criarJogadorString};
-        const calcularQI = ${calcularQIString};
+    // Função de Cálculo de QI (QI = (Acertos / Tempo Médio de Resposta) * Coeficiente)
+    const calculateIQ = (playerStats, totalTime) => {
+        const { correctAttempts, totalAttempts, responseTimes } = playerStats;
+        
+        if (correctAttempts === 0) return 0;
 
-        /**
-         * Inicializa o estado do jogo e retorna os pares embaralhados.
-         * @param {number} numJogadores
-         */
-        window.API_INICIAR_JOGO = async (numJogadores) => {
-            const todosPares = [...JOGOS_COMPLEMENTARES, ...JOGOS_COMPLEMENTARES];
-            window.gameState.pares = shuffle(todosPares);
-            window.gameState.jogadores = Array.from({ length: numJogadores }, (_, i) => criarJogador(i + 1));
-            window.gameState.cartoesVirados = [];
-            window.gameState.paresEncontrados = 0;
-            window.gameState.jogadorAtualIndex = 0;
-            window.gameState.tempoTotalGlobal = 0;
-            window.gameState.jogoIniciado = true;
-            window.gameState.tempoInicio = Date.now();
+        const totalResponseTime = responseTimes.reduce((sum, time) => sum + time, 0);
+        const averageResponseTime = totalResponseTime / totalAttempts; // Tempo médio por tentativa
 
-            return {
-                pares: window.gameState.pares,
-                jogadores: window.gameState.jogadores
-            };
-        };
+        // Coeficiente de Acerto: Prioriza acerto e velocidade
+        const accuracyFactor = correctAttempts / gameState.maxPairs; // Acertos pelo máximo possível
 
-        /**
-         * Tenta virar um cartão e checa o par.
-         * @param {number} indexCartao
-         */
-        window.API_VIRAR_CARTAO = async (indexCartao) => {
-             const gs = window.gameState; 
-             
-             // Previne cliques se o jogo não estiver iniciado ou já houver 2 cartas viradas
-             if (!gs.jogoIniciado || gs.cartoesVirados.length >= 2) {
-                return { match: false, cartoesVirados: gs.cartoesVirados };
-            }
-            
-            // Previne clicar na mesma carta duas vezes
-            if (gs.cartoesVirados.includes(indexCartao)) {
-                return { match: false, cartoesVirados: gs.cartoesVirados };
-            }
-            
-            gs.cartoesVirados.push(indexCartao);
+        // Fator de Velocidade: Inverso do tempo médio. Quanto menor o tempo, maior o QI.
+        // Adiciona 1 para evitar divisão por zero.
+        const speedFactor = 1000 / (averageResponseTime + 1); 
 
-            if (gs.cartoesVirados.length === 2) {
-                const [idx1, idx2] = gs.cartoesVirados;
-                const emoji1 = gs.pares[idx1];
-                const emoji2 = gs.pares[idx2];
-                
-                if (emoji1 === emoji2) {
-                    // ACERTOU O PAR
-                    gs.paresEncontrados++;
-                    
-                    const jogador = gs.jogadores[gs.jogadorAtualIndex];
-                    jogador.acertos++;
-                    
-                    const jogoFinalizado = gs.paresEncontrados === JOGOS_COMPLEMENTARES.length;
+        // QI Base = (Acertos x 1000) / (Tempo Total do Jogador)
+        // Uma fórmula simples e divertida para crianças:
+        let qi = Math.round((correctAttempts * 10000) / (totalTime * 0.1 + 1)); // Fator de tempo menor
+        
+        return Math.min(150, Math.max(50, qi)); // Mantém o QI em um intervalo razoável (50-150)
+    };
 
-                    gs.cartoesVirados = [];
-                    
-                    return {
-                        match: true,
-                        jogoFinalizado: jogoFinalizado,
-                        cartoesVirados: [idx1, idx2],
-                        jogadores: gs.jogadores
-                    };
-                } else {
-                    // ERROU O PAR - Passa a vez
-                    gs.jogadorAtualIndex = (gs.jogadorAtualIndex + 1) % gs.jogadores.length;
-                    
-                    // Atualiza o status 'ativo' no array de jogadores
-                    gs.jogadores.forEach((j, i) => j.ativo = (i === gs.jogadorAtualIndex));
-                    
-                    const tempVirados = gs.cartoesVirados;
-                    gs.cartoesVirados = []; 
 
-                    return {
-                        match: false,
-                        jogoFinalizado: false,
-                        cartoesVirados: tempVirados,
-                        jogadores: gs.jogadores
-                    };
+    // --- Rotas da API ---
+
+    const { url } = req;
+    const action = new URL(url, `http://${req.headers.host}`).searchParams.get('action');
+
+    try {
+        switch (action) {
+            case 'start': {
+                const playersCount = parseInt(new URL(url, `http://${req.headers.host}`).searchParams.get('players'), 10);
+                if (isNaN(playersCount) || playersCount < 1 || playersCount > 4) {
+                    return res.status(400).json({ error: 'Número de jogadores inválido.' });
                 }
-            } else {
-                // Primeiro cartão virado
-                return { match: false, cartoesVirados: gs.cartoesVirados };
-            }
-        };
 
-        /**
-         * Calcula os resultados finais, o QI, e finaliza o jogo.
-         * @param {number} tempoTotalSegundos
-         */
-        window.API_FINALIZAR_JOGO = async (tempoTotalSegundos) => {
-            const gs = window.gameState; 
-            gs.jogoIniciado = false;
-            gs.tempoTotalGlobal = tempoTotalSegundos;
-
-            const resultadosFinais = gs.jogadores.map(j => {
-                const qiCalculado = calcularQI(j.acertos, gs.tempoTotalGlobal);
+                resetState();
                 
-                return {
-                    nome: j.nome,
-                    acertos: j.acertos,
-                    tempo: 'N/A (Tempo Global)', 
-                    qiCalculado: qiCalculado
-                };
-            });
-            
-            const minutos = Math.floor(tempoTotalSegundos / 60).toString().padStart(2, '0');
-            const segundos = (tempoTotalSegundos % 60).toString().padStart(2, '0');
+                // Inicializa jogadores
+                for (let i = 1; i <= playersCount; i++) {
+                    gameState.players.push({
+                        id: i,
+                        name: `Jogador ${i}`,
+                        score: 0,
+                        pairsFound: 0,
+                        totalTimeMs: 0,
+                        correctAttempts: 0, // Tentativas que resultaram em acerto
+                        totalAttempts: 0, // Total de cliques (para QI)
+                        responseTimes: [], // Tempo de resposta de cada jogada
+                        currentTurnStartTime: Date.now(),
+                    });
+                }
 
-            return {
-                resultados: resultadosFinais,
-                tempoTotal: \`\${minutos}:\${segundos}\`
-            };
-        };
-    `;
+                // Cria o tabuleiro e inicia o jogo
+                gameState.board = createBoard();
+                gameState.startTime = Date.now();
+                gameState.status = 'PLAYING';
+                
+                // Retorna o estado inicial do jogo e tabuleiro
+                return res.status(200).json({ 
+                    success: true, 
+                    gameState: {
+                        status: gameState.status,
+                        players: gameState.players.map(p => ({
+                            id: p.id,
+                            name: p.name,
+                            score: p.score,
+                            pairsFound: p.pairsFound,
+                            totalTimeMs: p.totalTimeMs,
+                        })),
+                        currentPlayerId: gameState.players[0].id,
+                        board: gameState.board.map(tile => ({ id: tile.id, isFlipped: tile.isFlipped, isMatched: tile.isMatched })),
+                        maxPairs: gameState.maxPairs,
+                    }
+                });
+            }
 
-    res.send(apiCode);
+            case 'move': {
+                if (gameState.status !== 'PLAYING') {
+                    return res.status(403).json({ error: 'O jogo não está em andamento.' });
+                }
+
+                const playerId = parseInt(new URL(url, `http://${req.headers.host}`).searchParams.get('playerId'), 10);
+                const tileId = parseInt(new URL(url, `http://${req.headers.host}`).searchParams.get('tileId'), 10);
+                
+                const player = gameState.players.find(p => p.id === playerId);
+                if (!player || player.id !== gameState.players[gameState.currentPlayerIndex].id) {
+                    return res.status(403).json({ error: 'Não é a vez deste jogador ou ID inválido.' });
+                }
+
+                const tile = gameState.board.find(t => t.id === tileId);
+                if (!tile || tile.isFlipped || tile.isMatched) {
+                    return res.status(400).json({ error: 'Movimento inválido: peça já virada ou casada.' });
+                }
+
+                tile.isFlipped = true;
+                player.totalAttempts++;
+
+                const flippedTiles = gameState.board.filter(t => t.isFlipped && !t.isMatched);
+
+                // --- Lógica de Acerto ou Erro ---
+                let match = false;
+                let isGameOver = false;
+                let sound = 'click';
+
+                if (flippedTiles.length === 2) {
+                    const [tile1, tile2] = flippedTiles;
+                    
+                    // Calcula o tempo de resposta da jogada
+                    const responseTime = Date.now() - player.currentTurnStartTime;
+                    player.responseTimes.push(responseTime);
+                    player.totalTimeMs += (Date.now() - player.currentTurnStartTime);
+                    
+                    if (tile1.emoji === tile2.emoji) {
+                        // Acerto
+                        tile1.isMatched = true;
+                        tile2.isMatched = true;
+                        tile1.isFlipped = true; // Mantém virada, mas agora casada
+                        tile2.isFlipped = true; // Mantém virada, mas agora casada
+
+                        player.score += 10;
+                        player.pairsFound++;
+                        player.correctAttempts++;
+                        gameState.pairsFound++;
+                        match = true;
+                        sound = 'acerto';
+
+                        // Verifica fim de jogo
+                        if (gameState.pairsFound === gameState.maxPairs) {
+                            gameState.status = 'FINISHED';
+                            gameState.gameDuration = Date.now() - gameState.startTime;
+                            isGameOver = true;
+                        }
+
+                        // O jogador que acertou joga novamente
+                        player.currentTurnStartTime = Date.now();
+
+                    } else {
+                        // Erro: Vira as peças de volta após um pequeno atraso (simulado no cliente)
+                        sound = 'erro';
+                        
+                        // Passa para o próximo jogador, atualiza o tempo total do turno
+                        const numPlayers = gameState.players.length;
+                        gameState.currentPlayerIndex = (gameState.currentPlayerIndex + 1) % numPlayers;
+                        gameState.players[gameState.currentPlayerIndex].currentTurnStartTime = Date.now();
+                    }
+                } else {
+                    // Primeiro clique, atualiza o tempo de início do turno
+                    player.currentTurnStartTime = Date.now();
+                }
+
+                // Retorna o estado atualizado do jogo
+                return res.status(200).json({ 
+                    success: true, 
+                    match: match, 
+                    sound: sound,
+                    isGameOver: isGameOver,
+                    gameState: {
+                        status: gameState.status,
+                        players: gameState.players.map(p => ({
+                            id: p.id,
+                            name: p.name,
+                            score: p.score,
+                            pairsFound: p.pairsFound,
+                            totalTimeMs: p.totalTimeMs,
+                        })),
+                        currentPlayerId: gameState.players[gameState.currentPlayerIndex].id,
+                        board: gameState.board.map(tile => ({ id: tile.id, isFlipped: tile.isFlipped, isMatched: tile.isMatched, emoji: tile.isFlipped || tile.isMatched ? tile.emoji : null })),
+                        pairsFound: gameState.pairsFound,
+                        maxPairs: gameState.maxPairs,
+                    }
+                });
+            }
+
+            case 'finish': {
+                if (gameState.status !== 'PLAYING' && gameState.status !== 'FINISHED') {
+                    return res.status(403).json({ error: 'O jogo não está pronto para ser finalizado.' });
+                }
+
+                gameState.status = 'FINISHED';
+                gameState.gameDuration = Date.now() - gameState.startTime;
+
+                // Prepara os resultados finais e calcula o QI
+                const finalResults = gameState.players.map(p => {
+                    const totalTime = p.totalTimeMs || (Date.now() - gameState.startTime);
+                    const qi = calculateIQ(p, totalTime);
+                    
+                    return {
+                        id: p.id,
+                        name: p.name,
+                        pairsFound: p.pairsFound,
+                        totalTimeMs: totalTime,
+                        totalTimeFormatted: (totalTime / 1000).toFixed(2),
+                        qi: qi,
+                        score: p.score,
+                    };
+                });
+                
+                // Ordena por QI e depois por acertos
+                finalResults.sort((a, b) => {
+                    if (b.qi !== a.qi) return b.qi - a.qi;
+                    return b.pairsFound - a.pairsFound;
+                });
+
+
+                return res.status(200).json({ 
+                    success: true, 
+                    results: finalResults,
+                    gameDuration: gameState.gameDuration,
+                });
+            }
+
+            case 'restart': {
+                resetState();
+                return res.status(200).json({ success: true, message: 'Jogo reiniciado. Voltando ao menu de configuração.' });
+            }
+
+            case 'state': {
+                // Rota para o cliente obter o estado atual (útil para reconexão ou debugging)
+                return res.status(200).json({ 
+                    success: true, 
+                    gameState: {
+                        status: gameState.status,
+                        players: gameState.players.map(p => ({ id: p.id, name: p.name, score: p.score, pairsFound: p.pairsFound, totalTimeMs: p.totalTimeMs })),
+                        currentPlayerId: gameState.players[gameState.currentPlayerIndex]?.id,
+                        board: gameState.board.map(tile => ({ id: tile.id, isFlipped: tile.isFlipped, isMatched: tile.isMatched, emoji: tile.isFlipped || tile.isMatched ? tile.emoji : null })),
+                        pairsFound: gameState.pairsFound,
+                        maxPairs: gameState.maxPairs,
+                    }
+                });
+            }
+
+            default: {
+                return res.status(404).json({ error: 'Ação não encontrada.' });
+            }
+        }
+    } catch (e) {
+        console.error('API Error:', e);
+        return res.status(500).json({ error: 'Erro interno do servidor: ' + e.message });
+    }
 };
