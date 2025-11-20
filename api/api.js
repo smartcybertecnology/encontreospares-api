@@ -20,24 +20,26 @@ let gameState = {
 module.exports = (req, res) => {
     // Domínio permitido para acesso à API
     const ALLOWED_ORIGIN = 'https://playjogosgratis.com';
-    const requestOrigin = req.headers.origin;
+    // O header 'origin' pode estar em lowercase dependendo do servidor/ambiente
+    const requestOrigin = req.headers.origin || req.headers.Origin;
 
     // --- Controle de CORS e Segurança ---
     const setCorsHeaders = (allow) => {
         if (allow) {
             res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
         } else {
-            // Se a origem não for a permitida, não define o header, forçando o bloqueio pelo browser
-            // para requisições que não sejam GET/POST simples.
-            // Para GET/POST simples, o bloqueio deve ser feito pela lógica abaixo.
+            // Se a origem não for a permitida, nega explicitamente para o header
+            // O frontend deve ser bloqueado pelo browser ao tentar acessar o recurso
             res.setHeader('Access-Control-Allow-Origin', 'null'); 
         }
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Origin');
+        res.setHeader('Access-Control-Max-Age', '86400'); // Cache do pré-voo por 24 horas
     };
 
     // Tratamento da requisição OPTIONS (pré-voo CORS)
     if (req.method === 'OPTIONS') {
+        // Permite o pré-voo apenas se a origem for a permitida
         setCorsHeaders(requestOrigin === ALLOWED_ORIGIN);
         res.writeHead(204);
         res.end();
@@ -103,6 +105,7 @@ module.exports = (req, res) => {
         const averageResponseTime = totalResponseTime / (totalAttempts || 1); // Evita divisão por zero
 
         // QI Base = (Acertos * 10000) / (Tempo Total do Jogador + 1)
+        // A métrica é uma simplificação que penaliza o tempo total do jogador.
         let qi = Math.round((correctAttempts * 10000) / (totalTime * 0.1 + 1)); 
         
         return Math.min(150, Math.max(50, qi)); 
@@ -110,13 +113,14 @@ module.exports = (req, res) => {
 
 
     // --- Rotas da API (Processamento) ---
-    const { url } = req;
-    const action = new URL(url, `http://${req.headers.host}`).searchParams.get('action');
+    // A URL deve ser reconstruída para garantir que os parâmetros de busca sejam lidos corretamente
+    const fullUrl = new URL(req.url, `http://${req.headers.host}`);
+    const action = fullUrl.searchParams.get('action');
 
     try {
         switch (action) {
             case 'start': {
-                const playersCount = parseInt(new URL(url, `http://${req.headers.host}`).searchParams.get('players'), 10);
+                const playersCount = parseInt(fullUrl.searchParams.get('players'), 10);
                 if (isNaN(playersCount) || playersCount < 1 || playersCount > 4) {
                     return res.status(400).json({ error: 'Número de jogadores inválido.' });
                 }
@@ -164,8 +168,8 @@ module.exports = (req, res) => {
                     return res.status(403).json({ error: 'O jogo não está em andamento.' });
                 }
 
-                const playerId = parseInt(new URL(url, `http://${req.headers.host}`).searchParams.get('playerId'), 10);
-                const tileId = parseInt(new URL(url, `http://${req.headers.host}`).searchParams.get('tileId'), 10);
+                const playerId = parseInt(fullUrl.searchParams.get('playerId'), 10);
+                const tileId = parseInt(fullUrl.searchParams.get('tileId'), 10);
                 
                 const player = gameState.players.find(p => p.id === playerId);
                 if (!player || player.id !== gameState.players[gameState.currentPlayerIndex].id) {
@@ -191,17 +195,20 @@ module.exports = (req, res) => {
                     
                     const responseTime = Date.now() - player.currentTurnStartTime;
                     player.responseTimes.push(responseTime);
-                    player.totalTimeMs += responseTime;
                     
+                    // Verifica se as peças coincidem
                     if (tile1.emoji === tile2.emoji) {
                         tile1.isMatched = true;
                         tile2.isMatched = true;
+                        // Mantém isFlipped como true para a UI mostrar o emoji
                         tile1.isFlipped = true;
                         tile2.isFlipped = true;
 
                         player.score += 10;
                         player.pairsFound++;
                         player.correctAttempts++;
+                        // Adiciona o tempo de resposta apenas no acerto
+                        player.totalTimeMs += responseTime; 
                         gameState.pairsFound++;
                         match = true;
                         sound = 'acerto';
@@ -212,6 +219,7 @@ module.exports = (req, res) => {
                             isGameOver = true;
                         }
 
+                        // O jogador que acertou continua
                         player.currentTurnStartTime = Date.now();
 
                     } else {
@@ -221,10 +229,22 @@ module.exports = (req, res) => {
                         const numPlayers = gameState.players.length;
                         gameState.currentPlayerIndex = (gameState.currentPlayerIndex + 1) % numPlayers;
                         gameState.players[gameState.currentPlayerIndex].currentTurnStartTime = Date.now();
+                        
+                        // Não é um acerto, então o tempo não é contabilizado como tempo de acerto
                     }
                 } else {
+                    // Primeiro clique, atualiza o tempo de início do turno
                     player.currentTurnStartTime = Date.now();
                 }
+
+                // Cria o estado para o frontend
+                const boardStateForFrontend = gameState.board.map(tile => ({ 
+                    id: tile.id, 
+                    isFlipped: tile.isFlipped, 
+                    isMatched: tile.isMatched, 
+                    // Mostra o emoji apenas se estiver virado ou casado
+                    emoji: tile.isFlipped || tile.isMatched ? tile.emoji : null 
+                }));
 
                 return res.status(200).json({ 
                     success: true, 
@@ -240,8 +260,8 @@ module.exports = (req, res) => {
                             pairsFound: p.pairsFound,
                             totalTimeMs: p.totalTimeMs,
                         })),
-                        currentPlayerId: gameState.players[gameState.currentPlayerIndex].id,
-                        board: gameState.board.map(tile => ({ id: tile.id, isFlipped: tile.isFlipped, isMatched: tile.isMatched, emoji: tile.isFlipped || tile.isMatched ? tile.emoji : null })),
+                        currentPlayerId: gameState.players[gameState.currentPlayerIndex]?.id,
+                        board: boardStateForFrontend,
                         pairsFound: gameState.pairsFound,
                         maxPairs: gameState.maxPairs,
                     }
@@ -257,7 +277,6 @@ module.exports = (req, res) => {
                 gameState.gameDuration = Date.now() - gameState.startTime;
 
                 const finalResults = gameState.players.map(p => {
-                    // O tempo total é a soma dos tempos de resposta para todas as tentativas
                     const totalTime = p.totalTimeMs; 
                     const qi = calculateIQ(p, totalTime);
                     
@@ -272,6 +291,7 @@ module.exports = (req, res) => {
                     };
                 });
                 
+                // Ordena por QI (maior para menor) e depois por pares encontrados
                 finalResults.sort((a, b) => {
                     if (b.qi !== a.qi) return b.qi - a.qi;
                     return b.pairsFound - a.pairsFound;
@@ -291,6 +311,7 @@ module.exports = (req, res) => {
             }
 
             case 'state': {
+                // Rota de estado para debug ou sincronização (opcional)
                 return res.status(200).json({ 
                     success: true, 
                     gameState: {
@@ -310,6 +331,7 @@ module.exports = (req, res) => {
         }
     } catch (e) {
         console.error('API Error:', e);
+        // Garante que o frontend receba uma mensagem de erro JSON
         return res.status(500).json({ error: 'Erro interno do servidor: ' + e.message });
     }
 };
