@@ -1,30 +1,30 @@
-// api/api.js - Vercel Serverless Function
+// api/api.js - Vercel Serverless Function (Node.js)
 
 // --------------------------------------------------------------------------------
 // Configuração de Segurança e CORS
 // --------------------------------------------------------------------------------
 
-const ALLOWED_ORIGIN = 'https://playjogosgratis.com'; // Domínio permitido
-const JOGOS_COMPLEMENTARES = ["😎", "🤩", "🚀", "🍕", "🐶", "🎈", "💖", "🤖"]; // Emojis para o jogo (8 pares = 16 cartas)
+// Domínio ÚNICO PERMITIDO para acesso à lógica do jogo
+const ALLOWED_ORIGIN = 'https://playjogosgratis.com'; 
+const JOGOS_COMPLEMENTARES = ["😎", "🤩", "🚀", "🍕", "🐶", "🎈", "💖", "🤖"]; // Emojis para o jogo (8 pares)
 
 // --------------------------------------------------------------------------------
 // Lógica do Jogo Centralizada (Variáveis e Funções Utilitárias no Servidor)
 // --------------------------------------------------------------------------------
-let gameState = {
+
+// Esta cópia serve apenas para ser injetada como estado inicial.
+let initialGameState = { 
     jogadores: [],
     pares: [],
-    cartoesVirados: [], // Array de índices
+    cartoesVirados: [], 
     paresEncontrados: 0,
     jogadorAtualIndex: 0,
-    tempoTotalGlobal: 0, // Acumulado de segundos
+    tempoTotalGlobal: 0,
     jogoIniciado: false,
     tempoInicio: 0,
 };
 
-/**
- * Função utilitária para embaralhar um array (Algoritmo de Fisher-Yates).
- * @param {Array} array
- */
+/** Função utilitária para embaralhar um array (Fisher-Yates). */
 const shuffle = (array) => {
     let currentIndex = array.length, randomIndex;
     while (currentIndex !== 0) {
@@ -37,11 +37,7 @@ const shuffle = (array) => {
     return array;
 };
 
-/**
- * Gera um objeto de jogador.
- * @param {number} id
- * @returns {object}
- */
+/** Gera um objeto de jogador. */
 const criarJogador = (id) => ({
     id: id,
     nome: `Jogador ${id}`,
@@ -51,78 +47,65 @@ const criarJogador = (id) => ({
     ativo: id === 1,
 });
 
-/**
- * Função para calcular o QI baseado no desempenho.
- * QI = 100 + (acertos * 10) - (tempoTotal / 10). (Fórmula infantil simplificada)
- * @param {number} acertos
- * @param {number} tempoTotal (em segundos)
- * @returns {number} QI calculado.
- */
+/** Função para calcular o QI baseado no desempenho. */
 const calcularQI = (acertos, tempoTotal) => {
+    // Fórmula infantil simplificada
     let qi = 100 + (acertos * 10) - (tempoTotal / 10);
     return Math.max(70, qi); 
 };
 
 // --------------------------------------------------------------------------------
-// Funções da API para o Vercel
+// Handler da Função Serverless
 // --------------------------------------------------------------------------------
 
-// A função `handler` é o ponto de entrada para o Vercel
 module.exports = (req, res) => {
     const origin = req.headers.origin;
 
-    // 1. TRATAMENTO DE CORS E BLOQUEIO DE ORIGEM
+    // --- 1. Tratamento de CORS e Bloqueio ---
+    const isOriginAllowed = origin === ALLOWED_ORIGIN;
     
-    // Responde ao OPTIONS (pré-voo) para CORS 
     if (req.method === 'OPTIONS') {
-        if (origin === ALLOWED_ORIGIN) {
-            // Permite o pré-voo (preflight) se a origem for correta
+        if (isOriginAllowed) {
             res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
             res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
             res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
             res.writeHead(204);
-            res.end();
-            return;
         } else {
-             // Bloqueia OPTIONS de outras origens
              res.writeHead(403);
-             res.end();
-             return;
         }
+        res.end();
+        return;
     }
 
-    // BLOQUEIO PARA MÉTODOS GET/POST
-    if (origin !== ALLOWED_ORIGIN) {
-        // Bloqueia: Não define o cabeçalho 'Access-Control-Allow-Origin'
-        // e retorna um script de erro que não contém a lógica do jogo
+    if (!isOriginAllowed) {
+        // Bloqueia e retorna um script vazio/de erro para origens não permitidas.
         res.setHeader('Content-Type', 'application/javascript');
         res.send(`
             console.error("Acesso bloqueado! Lógica da API só pode ser acessada de ${ALLOWED_ORIGIN}.");
-            // Define as funções como nulas para evitar erros no navegador
-            window.API_INICIAR_JOGO = () => { console.error("Acesso negado."); return Promise.resolve({}); };
-            window.API_VIRAR_CARTAO = () => { console.error("Acesso negado."); return Promise.resolve({}); };
-            window.API_FINALIZAR_JOGO = () => { console.error("Acesso negado."); return Promise.resolve({}); };
+            window.API_INICIAR_JOGO = window.API_VIRAR_CARTAO = window.API_FINALIZAR_JOGO = () => { console.error("Acesso negado."); return Promise.resolve({}); };
         `);
-        return; // Termina a execução
+        return;
     }
+    // --- Fim do Tratamento de CORS ---
 
-    // 2. ORIGEM PERMITIDA: Retorna o Script Completo
-    res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
+    // 2. ORIGEM PERMITIDA: Retorna o Script Completo (Lógica Injetada)
+    res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN); 
     res.setHeader('Content-Type', 'application/javascript');
     
-    // As funções utilitárias precisam ter seus corpos injetados como strings
+    // Injeta as funções utilitárias no script para o cliente
     const shuffleString = shuffle.toString();
     const criarJogadorString = criarJogador.toString();
     const calcularQIString = calcularQI.toString();
 
     const apiCode = `
         // --------------------------------------------------------------------------------
-        // Lógica do Jogo (Injetada no Navegador)
+        // Lógica do Jogo Injetada (Executada no Navegador)
         // --------------------------------------------------------------------------------
         
         // Variáveis de Jogo
         const JOGOS_COMPLEMENTARES = ${JSON.stringify(JOGOS_COMPLEMENTARES)};
-        let gameState = ${JSON.stringify(gameState)}; 
+        // Define o estado do jogo globalmente no navegador, com o estado inicial.
+        window.gameState = ${JSON.stringify(initialGameState)}; 
 
         // Funções Utilitárias (Injetadas)
         const shuffle = ${shuffleString};
@@ -131,99 +114,100 @@ module.exports = (req, res) => {
 
         /**
          * Inicializa o estado do jogo e retorna os pares embaralhados.
+         * @param {number} numJogadores
          */
         window.API_INICIAR_JOGO = async (numJogadores) => {
             const todosPares = [...JOGOS_COMPLEMENTARES, ...JOGOS_COMPLEMENTARES];
-            gameState.pares = shuffle(todosPares);
-            gameState.jogadores = Array.from({ length: numJogadores }, (_, i) => criarJogador(i + 1));
-            gameState.cartoesVirados = [];
-            gameState.paresEncontrados = 0;
-            gameState.jogadorAtualIndex = 0;
-            gameState.tempoTotalGlobal = 0;
-            gameState.jogoIniciado = true;
-            gameState.tempoInicio = Date.now();
+            window.gameState.pares = shuffle(todosPares);
+            window.gameState.jogadores = Array.from({ length: numJogadores }, (_, i) => criarJogador(i + 1));
+            window.gameState.cartoesVirados = [];
+            window.gameState.paresEncontrados = 0;
+            window.gameState.jogadorAtualIndex = 0;
+            window.gameState.tempoTotalGlobal = 0;
+            window.gameState.jogoIniciado = true;
+            window.gameState.tempoInicio = Date.now();
 
             return {
-                pares: gameState.pares,
-                jogadores: gameState.jogadores
+                pares: window.gameState.pares,
+                jogadores: window.gameState.jogadores
             };
         };
 
         /**
          * Tenta virar um cartão e checa o par.
+         * @param {number} indexCartao
          */
         window.API_VIRAR_CARTAO = async (indexCartao) => {
-             if (!gameState.jogoIniciado || gameState.cartoesVirados.length >= 2) {
-                return { 
-                    match: false, 
-                    cartoesVirados: gameState.cartoesVirados 
-                };
+             const gs = window.gameState; 
+             
+             // Previne cliques se o jogo não estiver iniciado ou já houver 2 cartas viradas
+             if (!gs.jogoIniciado || gs.cartoesVirados.length >= 2) {
+                return { match: false, cartoesVirados: gs.cartoesVirados };
             }
             
-            if (gameState.cartoesVirados.includes(indexCartao)) {
-                return { 
-                    match: false, 
-                    cartoesVirados: gameState.cartoesVirados 
-                };
+            // Previne clicar na mesma carta duas vezes
+            if (gs.cartoesVirados.includes(indexCartao)) {
+                return { match: false, cartoesVirados: gs.cartoesVirados };
             }
             
-            gameState.cartoesVirados.push(indexCartao);
+            gs.cartoesVirados.push(indexCartao);
 
-            if (gameState.cartoesVirados.length === 2) {
-                const [idx1, idx2] = gameState.cartoesVirados;
-                const emoji1 = gameState.pares[idx1];
-                const emoji2 = gameState.pares[idx2];
+            if (gs.cartoesVirados.length === 2) {
+                const [idx1, idx2] = gs.cartoesVirados;
+                const emoji1 = gs.pares[idx1];
+                const emoji2 = gs.pares[idx2];
                 
                 if (emoji1 === emoji2) {
                     // ACERTOU O PAR
-                    gameState.paresEncontrados++;
+                    gs.paresEncontrados++;
                     
-                    const jogador = gameState.jogadores[gameState.jogadorAtualIndex];
+                    const jogador = gs.jogadores[gs.jogadorAtualIndex];
                     jogador.acertos++;
                     
-                    const jogoFinalizado = gameState.paresEncontrados === JOGOS_COMPLEMENTARES.length;
+                    const jogoFinalizado = gs.paresEncontrados === JOGOS_COMPLEMENTARES.length;
 
-                    gameState.cartoesVirados = [];
+                    gs.cartoesVirados = [];
                     
                     return {
                         match: true,
                         jogoFinalizado: jogoFinalizado,
                         cartoesVirados: [idx1, idx2],
-                        jogadores: gameState.jogadores
+                        jogadores: gs.jogadores
                     };
                 } else {
                     // ERROU O PAR - Passa a vez
-                    gameState.jogadorAtualIndex = (gameState.jogadorAtualIndex + 1) % gameState.jogadores.length;
-                    gameState.jogadores.forEach((j, i) => j.ativo = (i === gameState.jogadorAtualIndex));
+                    gs.jogadorAtualIndex = (gs.jogadorAtualIndex + 1) % gs.jogadores.length;
                     
-                    const tempVirados = gameState.cartoesVirados;
-                    gameState.cartoesVirados = []; 
+                    // Atualiza o status 'ativo' no array de jogadores
+                    gs.jogadores.forEach((j, i) => j.ativo = (i === gs.jogadorAtualIndex));
+                    
+                    const tempVirados = gs.cartoesVirados;
+                    gs.cartoesVirados = []; 
 
                     return {
                         match: false,
                         jogoFinalizado: false,
                         cartoesVirados: tempVirados,
-                        jogadores: gameState.jogadores
+                        jogadores: gs.jogadores
                     };
                 }
             } else {
                 // Primeiro cartão virado
-                return { 
-                    match: false, 
-                    cartoesVirados: gameState.cartoesVirados 
-                };
+                return { match: false, cartoesVirados: gs.cartoesVirados };
             }
         };
 
         /**
          * Calcula os resultados finais, o QI, e finaliza o jogo.
+         * @param {number} tempoTotalSegundos
          */
         window.API_FINALIZAR_JOGO = async (tempoTotalSegundos) => {
-            gameState.jogoIniciado = false;
-            gameState.tempoTotalGlobal = tempoTotalSegundos;
+            const gs = window.gameState; 
+            gs.jogoIniciado = false;
+            gs.tempoTotalGlobal = tempoTotalSegundos;
 
-            const resultadosFinais = gameState.jogadores.map(j => {
-                const qiCalculado = calcularQI(j.acertos, gameState.tempoTotalGlobal);
+            const resultadosFinais = gs.jogadores.map(j => {
+                const qiCalculado = calcularQI(j.acertos, gs.tempoTotalGlobal);
                 
                 return {
                     nome: j.nome,
