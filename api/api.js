@@ -126,3 +126,4 @@ export default (req, res) => {
     // Se a ação não for reconhecida ou o método for inválido
     return res.status(404).json({ error: "Ação não encontrada ou método inválido." });
 }
+
