@@ -2,31 +2,26 @@
 
 // --------------------------------------------------------------------------------
 // Configuração de Segurança e CORS
+// O domínio enviado pelo navegador é APENAS "https://playjogosgratis.com"
 // --------------------------------------------------------------------------------
 
-const ALLOWED_ORIGIN = 'https://playjogosgratis.com'; // Domínio permitido
-const JOGOS_COMPLEMENTARES = ["😎", "🤩", "🚀", "🍕", "🐶", "🎈", "💖", "🤖"]; // Emojis para o jogo (8 pares = 16 cartas)
+const ALLOWED_ORIGIN = 'https://playjogosgratis.com'; 
+const JOGOS_COMPLEMENTARES = ["😎", "🤩", "🚀", "🍕", "🐶", "🎈", "💖", "🤖"]; 
 
-// --------------------------------------------------------------------------------
-// Lógica do Jogo Centralizada (Variáveis de Estado Global na API - Cuidado com Vercel)
-// NOTA: Em um ambiente de Serverless real, o estado deve ser persistido (Ex: Redis/DB).
-// Para este exercício, usaremos variáveis globais. O Vercel pode reciclar essas variáveis.
-// --------------------------------------------------------------------------------
+// Variáveis de estado do jogo (aqui ou importadas)
 let gameState = {
     jogadores: [],
     pares: [],
-    cartoesVirados: [], // Array de índices
+    cartoesVirados: [],
     paresEncontrados: 0,
     jogadorAtualIndex: 0,
-    tempoTotalGlobal: 0, // Acumulado de segundos
+    tempoTotalGlobal: 0,
     jogoIniciado: false,
     tempoInicio: 0,
 };
 
-/**
- * Função utilitária para embaralhar um array (Algoritmo de Fisher-Yates).
- * @param {Array} array
- */
+// ... Funções utilitárias (shuffle, criarJogador, calcularQI) ...
+
 const shuffle = (array) => {
     let currentIndex = array.length, randomIndex;
     while (currentIndex !== 0) {
@@ -39,57 +34,49 @@ const shuffle = (array) => {
     return array;
 };
 
-/**
- * Gera um objeto de jogador.
- * @param {number} id
- * @returns {object}
- */
 const criarJogador = (id) => ({
     id: id,
     nome: `Jogador ${id}`,
     acertos: 0,
-    tempoResposta: 0, // Tempo acumulado de resposta (não usado na v1, mas para complexidade de QI)
-    tempoFinal: 0, // Tempo do jogador para completar o jogo, se o jogo for por turno
+    tempoResposta: 0,
+    tempoFinal: 0,
     ativo: id === 1,
 });
 
-/**
- * Função para calcular o QI baseado no desempenho.
- * QI = 100 + (acertos * 10) - (tempoTotal / 10). (Fórmula infantil simplificada)
- * @param {number} acertos
- * @param {number} tempoTotal (em segundos)
- * @returns {number} QI calculado.
- */
 const calcularQI = (acertos, tempoTotal) => {
-    // 100 (Média) + Bônus por Acerto (10 pontos/par) - Penalidade por Tempo (1 ponto/10s)
     let qi = 100 + (acertos * 10) - (tempoTotal / 10);
-    // Garante um QI mínimo para manter a moral infantil
     return Math.max(70, qi); 
 };
+
 
 // --------------------------------------------------------------------------------
 // Funções da API para o Vercel
 // --------------------------------------------------------------------------------
 
-// A função `handler` é o ponto de entrada para o Vercel
 module.exports = (req, res) => {
-    // Tratamento de CORS
-    res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
+    const origin = req.headers.origin;
+
+    // 1. Tratamento de CORS
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     // Responde ao OPTIONS (pré-voo) para CORS
     if (req.method === 'OPTIONS') {
-        res.writeHead(204);
-        res.end();
+        if (origin === ALLOWED_ORIGIN) {
+             res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
+             res.writeHead(204);
+             res.end();
+        } else {
+             // Bloqueia OPTIONS de outras origens
+             res.writeHead(403);
+             res.end();
+        }
         return;
     }
-
-    // Se a requisição não vier do domínio permitido, bloqueia a lógica
-    const origin = req.headers.origin;
+    
+    // 2. Verifica a Origem da Requisição
     if (origin !== ALLOWED_ORIGIN) {
-        // Retorna o script, mas sem as funções essenciais definidas no global
-        // Isso permite o uso do <script> sem expor a lógica
+        // Bloqueia e retorna uma mensagem de erro simples
         res.setHeader('Content-Type', 'application/javascript');
         res.send(`
             console.error("Acesso bloqueado! Lógica da API só pode ser acessada de ${ALLOWED_ORIGIN}.");
@@ -97,22 +84,35 @@ module.exports = (req, res) => {
         return;
     }
 
-    // Se vier do domínio permitido, retorna o script com as funções globais!
-    // Esta é a parte de "segurança" (ofuscamento) - a lógica fica aqui.
+    // Se chegou aqui, a origem é a permitida. Define o cabeçalho final.
+    res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
     res.setHeader('Content-Type', 'application/javascript');
+
+    // 3. Define e envia as funções globais (Lógica do Jogo)
     const apiCode = `
         // --------------------------------------------------------------------------------
-        // Funções para comunicação com o DOM
+        // Lógica do Jogo (Protegida)
         // --------------------------------------------------------------------------------
         
-        /**
-         * Inicializa o estado do jogo e retorna os pares embaralhados.
-         */
+        // Define o estado do jogo e as funções utilitárias no escopo do navegador
+        const gameState = { ...window.gameState, ...${JSON.stringify(gameState)} };
+        const JOGOS_COMPLEMENTARES = ${JSON.stringify(JOGOS_COMPLEMENTARES)};
+        
+        // As funções shuffle, criarJogador e calcularQI devem ser replicadas aqui, 
+        // ou a API deve retornar as strings completas delas. 
+        // Para simplificar, vou re-incluir as funções simples aqui dentro.
+        
+        const criarJogador = ${criarJogador.toString()};
+        const shuffle = ${shuffle.toString()};
+        const calcularQI = ${calcularQI.toString()};
+
+        // Funções de Comunicação
         window.API_INICIAR_JOGO = async (numJogadores) => {
-            // Lógica de inicialização segura no servidor
+            // Lógica de inicialização segura
             const todosPares = [...JOGOS_COMPLEMENTARES, ...JOGOS_COMPLEMENTARES];
             gameState.pares = shuffle(todosPares);
             gameState.jogadores = Array.from({ length: numJogadores }, (_, i) => criarJogador(i + 1));
+            // ... (restante da lógica de inicialização de estado)
             gameState.cartoesVirados = [];
             gameState.paresEncontrados = 0;
             gameState.jogadorAtualIndex = 0;
@@ -126,20 +126,8 @@ module.exports = (req, res) => {
             };
         };
 
-        /**
-         * Tenta virar um cartão e checa o par.
-         */
         window.API_VIRAR_CARTAO = async (indexCartao, tempoAtual) => {
-            if (!gameState.jogoIniciado || gameState.cartoesVirados.length >= 2) {
-                // Se já houver 2 cartas viradas, ou o jogo não está iniciado, ignora.
-                return { 
-                    match: false, 
-                    cartoesVirados: gameState.cartoesVirados 
-                };
-            }
-            
-            // 1. Registra o clique e checa se é a mesma carta
-            if (gameState.cartoesVirados.includes(indexCartao)) {
+            if (!gameState.jogoIniciado || gameState.cartoesVirados.length >= 2 || gameState.cartoesVirados.includes(indexCartao)) {
                 return { 
                     match: false, 
                     cartoesVirados: gameState.cartoesVirados 
@@ -155,18 +143,13 @@ module.exports = (req, res) => {
                 let match = false;
                 
                 if (emoji1 === emoji2) {
-                    // ACERTOU O PAR
                     match = true;
                     gameState.paresEncontrados++;
-                    
-                    // Atualiza o estado do jogador
                     const jogador = gameState.jogadores[gameState.jogadorAtualIndex];
                     jogador.acertos++;
                     
-                    // Checa se o jogo terminou
                     const jogoFinalizado = gameState.paresEncontrados === JOGOS_COMPLEMENTARES.length;
 
-                    // Limpa o par virado
                     gameState.cartoesVirados = [];
                     
                     return {
@@ -176,23 +159,16 @@ module.exports = (req, res) => {
                         jogadores: gameState.jogadores
                     };
                 } else {
-                    // ERROU O PAR - Passa a vez
                     match = false;
                     
-                    // Passa para o próximo jogador
                     gameState.jogadorAtualIndex = (gameState.jogadorAtualIndex + 1) % gameState.jogadores.length;
-
-                    // Atualiza o status ativo dos jogadores
                     gameState.jogadores.forEach((j, i) => j.ativo = (i === gameState.jogadorAtualIndex));
                     
-                    // Retorna os índices para o DOM desvirar. A API manterá o estado de 'cartoesVirados'
-                    // por um breve momento (simulando a pausa do DOM antes de desvirar)
                     const tempVirados = gameState.cartoesVirados;
                     
-                    // Limpa o estado da API APÓS o DOM receber a informação de erro (tempo para animação)
                     setTimeout(() => {
                         gameState.cartoesVirados = [];
-                    }, 1500); // 1.5s de delay para o DOM animar o desvirar
+                    }, 1500); 
 
                     return {
                         match: false,
@@ -202,7 +178,6 @@ module.exports = (req, res) => {
                     };
                 }
             } else {
-                // Primeiro cartão virado
                 return { 
                     match: false, 
                     cartoesVirados: gameState.cartoesVirados 
@@ -210,25 +185,18 @@ module.exports = (req, res) => {
             }
         };
 
-        /**
-         * Calcula os resultados finais, o QI, e finaliza o jogo.
-         */
         window.API_FINALIZAR_JOGO = async (tempoTotalSegundos) => {
-            clearInterval(cronometroInterval);
+            // ... (Lógica de Finalização e Cálculo de QI)
             gameState.jogoIniciado = false;
             gameState.tempoTotalGlobal = tempoTotalSegundos;
-
-            // Define o tempo final para todos os jogadores no multiplayer
-            // (Nesta versão, o tempo é global e o QI é por acertos e tempo total)
             
             const resultadosFinais = gameState.jogadores.map(j => {
-                // Cálculo do QI
                 const qiCalculado = calcularQI(j.acertos, gameState.tempoTotalGlobal);
                 
                 return {
                     nome: j.nome,
                     acertos: j.acertos,
-                    tempo: 'N/A (Tempo Global)', // Em multiplayer por turno, este tempo é complexo de calcular
+                    tempo: 'N/A (Tempo Global)',
                     qiCalculado: qiCalculado
                 };
             });
@@ -241,12 +209,6 @@ module.exports = (req, res) => {
                 tempoTotal: \`\${minutos}:\${segundos}\`
             };
         };
-        
-        // Exponha as variáveis do jogo para o escopo para serem usadas nas funções acima.
-        const JOGOS_COMPLEMENTARES = ${JSON.stringify(JOGOS_COMPLEMENTARES)};
-        const gameState = { ...window.gameState, ...${JSON.stringify(gameState)} };
-        // Redefina as funções utilitárias que são usadas acima (shuffle, criarJogador, calcularQI)
-        // ... (Seriam re-definidas aqui dentro, mas para simplificar, confiamos na importação)
         
     `;
     // Enviando o código JS
