@@ -1,50 +1,68 @@
-/**
- * API DO JOGO - ENCONTRE OS PARES
- * Caminho: /api/api.js
- * Hospedagem: Vercel
- */
-
 export default function handler(req, res) {
-    // 1. Configurações de Segurança (Domínio Permitido)
-    const allowedOrigin = 'https://playjogosgratis.com';
-    
-    // Pega a origem da requisição ou o referer
-    const requestOrigin = req.headers.origin || req.headers.referer;
+    // 1. Configuração dos domínios permitidos
+    // Adicione seus domínios aqui (produção e teste local/vercel)
+    const allowedOrigins = [
+        'https://playjogosgratis.com',
+        'https://www.playjogosgratis.com',
+        'http://localhost:5500', // Útil para seus testes locais
+        'http://127.0.0.1:5500'
+    ];
 
-    // 2. Tratamento de Preflight (OPTIONS) para CORS
-    // Necessário se o navegador fizer uma verificação prévia
+    const origin = req.headers.origin || req.headers.referer;
+    
+    // Verifica se a origem da requisição está na lista de permitidos
+    let isAllowed = false;
+    let allowedOrigin = '';
+
+    if (origin) {
+        // Remove a barra final se houver para comparar corretamente
+        const cleanOrigin = origin.replace(/\/$/, '');
+        // Verifica se alguma das origens permitidas está contida na origem da requisição
+        if (allowedOrigins.some(allowed => cleanOrigin.startsWith(allowed))) {
+            isAllowed = true;
+            allowedOrigin = cleanOrigin; // Usa a origem que fez a requisição
+        }
+    }
+
+    // 2. Função para configurar cabeçalhos CORS
+    // É crucial incluir 'OPTIONS' nos métodos e configurar os headers corretamente
+    const setCorsHeaders = () => {
+        if (isAllowed) {
+            res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+        }
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+        res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+        res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
+    };
+
+    // 3. TRATAMENTO DO PREFLIGHT (O erro do seu console está aqui)
+    // O navegador manda um OPTIONS antes do GET/POST. Se não responder OK, ele bloqueia.
     if (req.method === 'OPTIONS') {
-        res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
-        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+        setCorsHeaders();
         res.status(200).end();
         return;
     }
 
-    // 3. Verificação de Segurança Rígida
-    // Se não vier do seu site, bloqueia.
-    // Nota: Durante testes locais, você pode adicionar 'http://localhost' ou '127.0.0.1'
-    const isAllowed = requestOrigin && (
-        requestOrigin.includes('playjogosgratis.com') || 
-        requestOrigin.includes('vercel.app') // Permite preview do vercel se necessário
-    );
+    // 4. Aplica os headers para a requisição real (GET)
+    setCorsHeaders();
 
+    // 5. Bloqueio de Segurança se não for origem permitida
     if (!isAllowed) {
-        res.status(403).json({ error: 'Acesso negado. Origem não autorizada.' });
-        return;
+        return res.status(403).json({ 
+            error: 'Acesso negado. Origem não autorizada.',
+            yourOrigin: origin 
+        });
     }
 
-    // 4. Headers de Resposta
-    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+    // 6. Define o tipo de conteúdo como Javascript
     res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-    res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate');
+    res.setHeader('Cache-Control', 'no-store'); // Evita cache durante desenvolvimento
 
-    // 5. O Código Lógico do Jogo
-    // Aqui está toda a lógica da classe MemoryGame encapsulada.
+    // 7. Lógica do Jogo (Servida como String)
     const gameCode = `
         console.log('🔒 API de Jogo Segura Carregada - playjogosgratis.com');
 
-        class MemoryGame {
+        window.GameLogicClass = class MemoryGame {
             constructor() {
                 this.players = 1;
                 this.currentPlayer = 1;
@@ -64,7 +82,7 @@ export default function handler(req, res) {
                 const sound = document.getElementById(\`sound-\${type}\`);
                 if (sound) {
                     sound.currentTime = 0;
-                    sound.play().catch(() => console.log('Interação de audio pendente'));
+                    sound.play().catch(() => {});
                 }
             }
 
@@ -105,7 +123,7 @@ export default function handler(req, res) {
                     card.setAttribute('data-index', index);
                     
                     card.innerHTML = \`
-                        <div class="card-inner" onclick="gameLogic.handleCardClick(\${index})">
+                        <div class="card-inner" onclick="window.gameLogic.handleCardClick(\${index})">
                             <div class="card-front">
                                 <i class="fas fa-star text-white text-2xl opacity-50"></i>
                             </div>
@@ -270,12 +288,11 @@ export default function handler(req, res) {
                 modal.classList.remove('hidden');
                 this.playSound('match');
             }
-        }
+        };
 
-        // Instancia global
-        window.gameLogic = new MemoryGame();
+        // Inicializa o jogo apenas quando o script é carregado
+        window.gameLogic = new window.GameLogicClass();
     `;
 
-    // Envia o código JS como resposta
     res.send(gameCode);
 }
