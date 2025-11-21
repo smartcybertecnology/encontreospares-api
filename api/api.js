@@ -1,138 +1,106 @@
-// api/api.js
+// api/api.js - CÓDIGO CORRIGIDO
 
 const DOMAIN_PERMITIDO = 'https://playjogosgratis.com';
-const TAMANHO_TABULEIRO = 16; // 4x4
-const QUANTIDADE_PALAVRAS = 10; // Número máximo da sequência correta (1 a 10)
+const QUANTIDADE_PALAVRAS = 10;
+let estadoGlobalSequencia = null; // Variável para simular o estado (ATENÇÃO: Não é confiável em Serverless real)
 
-/**
- * Mapeia o estado da sequência do jogo para uma sessão em memória simples.
- * Em um ambiente de produção real, você usaria um banco de dados ou Redis.
- * Para Serverless/Vercel, usamos uma variável global que **não é confiável** * entre invocações, mas para este exemplo, simularemos o estado.
- * Se o jogo requer persistência de estado entre requisições, você precisará 
- * de um banco de dados ou solução de cache externa.
- */
-let estadoGlobalSequencia = null; // { sequenciaCorreta: [1, 5, 3, ...], ultimoPassoCorreto: 0, palavras: [{id: 1, texto: '1'}, ...] }
+// (Mantenha as funções gerarNovaSequencia e calcularQI aqui)
 
-// --- LÓGICA DE JOGO ---
-
-/**
- * Gera uma sequência numérica aleatória e as palavras para o tabuleiro.
- */
-function gerarNovaSequencia() {
-    // 1. Gera a sequência correta (1 a N, embaralhada)
-    let sequenciaBase = Array.from({ length: QUANTIDADE_PALAVRAS }, (_, i) => i + 1);
-    // Embaralha a ordem da sequência para o desafio
-    const sequenciaCorreta = sequenciaBase.sort(() => Math.random() - 0.5);
-
-    // 2. Cria todos os blocos do tabuleiro (16 blocos)
-    // Os números da sequência estarão misturados com números aleatórios (distratores)
-    const todosBlocos = [];
-    const idsUsados = new Set();
-    
-    // Adiciona os blocos da sequência
-    sequenciaCorreta.forEach(num => {
-        todosBlocos.push({ id: num, texto: String(num) });
-        idsUsados.add(num);
-    });
-
-    // Adiciona blocos distratores até completar o tamanho do tabuleiro
-    while (todosBlocos.length < TAMANHO_TABULEIRO) {
-        // Encontra um ID não utilizado
-        let novoId;
-        do {
-            novoId = Math.floor(Math.random() * 100) + 1; // ID aleatório
-        } while (idsUsados.has(novoId));
-        
-        idsUsados.add(novoId);
-        // Os distratores são apenas placeholders, usando um ID diferente do 1-10
-        // e um texto visualmente diferente para não confundir com a sequência
-        const textoAleatorio = String.fromCharCode(65 + Math.floor(Math.random() * 26)); // Letra aleatória A-Z
-        todosBlocos.push({ id: novoId, texto: textoAleatorio }); 
+// Função para parsear o body da requisição POST
+async function parseBody(req) {
+    if (req.method !== 'POST' || req.body) {
+        return req.body;
     }
-
-    // 3. Embaralha o tabuleiro final para exibição
-    const palavrasExibicao = todosBlocos.sort(() => Math.random() - 0.5);
     
-    return {
-        sequenciaCorreta: sequenciaCorreta,
-        palavras: palavrasExibicao,
-        ultimoPassoCorreto: 0 // Indica que o próximo clique deve ser o 1º item da sequenciaCorreta
-    };
+    // Serverless Functions não parseiam JSON automaticamente
+    return new Promise((resolve, reject) => {
+        let body = '';
+        req.on('data', chunk => {
+            body += chunk.toString(); 
+        });
+        req.on('end', () => {
+            try {
+                if (body) {
+                    resolve(JSON.parse(body));
+                } else {
+                    resolve({});
+                }
+            } catch (error) {
+                reject(error);
+            }
+        });
+        req.on('error', reject);
+    });
 }
-
-/**
- * Calcula um QI simples baseado no desempenho do jogo.
- * @param {number} sequenciasCorretas - Número de cliques corretos na sequência.
- * @param {number} tempoFinalSegundos - Tempo total gasto.
- * @returns {number} QI calculado.
- */
-function calcularQI(sequenciasCorretas, tempoFinalSegundos) {
-    if (tempoFinalSegundos === 0 || sequenciasCorretas === 0) return 0;
-    
-    // Fórmula simples: (Acertos² / Tempo) * Fator_Base
-    const fatorBase = 150; 
-    let qi = (Math.pow(sequenciasCorretas, 2) / tempoFinalSegundos) * fatorBase;
-    
-    // Limita o QI máximo e mínimo para manter a sanidade
-    qi = Math.max(1, Math.min(250, qi));
-    return qi;
-}
-
-
-// --- LÓGICA DA API (Vercel Serverless Function) ---
 
 module.exports = async (req, res) => {
-    // Verifica o domínio de origem
     const origin = req.headers.origin;
 
-    // --- Tratamento CORS (Cross-Origin Resource Sharing) ---
-    // Permite apenas o domínio oficial (ou desenvolvimento local se necessário)
+    // --- Tratamento CORS (Permitido) ---
     if (origin === DOMAIN_PERMITIDO || origin.includes('localhost') || origin.includes('127.0.0.1')) {
         res.setHeader('Access-Control-Allow-Origin', origin);
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-        res.setHeader('Access-Control-Max-Age', '86400'); // Cache do preflight por 24h
+        res.setHeader('Access-Control-Max-Age', '86400');
     } else {
-        // Bloqueia outros domínios não permitidos
-        res.setHeader('Access-Control-Allow-Origin', 'null'); // Ou não define o header
         res.status(403).json({ error: 'Acesso Proibido. Domínio não autorizado.' });
         return;
     }
 
-    // --- Tratamento de Requisição OPTIONS (Preflight) ---
-    // Necessário para requisições POST
+    // --- Tratamento de Requisição OPTIONS ---
     if (req.method === 'OPTIONS') {
         res.statusCode = 200;
         res.end();
         return;
     }
 
-    // --- Lógica Principal da API ---
-
     const { action } = req.query;
+    let bodyData = {};
+    
+    // Parseia o corpo da requisição POST antes de continuar
+    if (req.method === 'POST') {
+        try {
+            bodyData = await parseBody(req);
+        } catch (error) {
+            // Se o JSON estiver mal formatado, retorna 400 Bad Request
+            res.status(400).json({ error: 'Erro ao analisar o JSON da requisição (Body mal formatado).' });
+            return;
+        }
+    }
 
     if (action === 'start' && req.method === 'GET') {
-        // 1. Ação: Iniciar o Jogo
+        // ... (Sua lógica de 'start' aqui) ...
         estadoGlobalSequencia = gerarNovaSequencia();
         
         res.status(200).json({
             status: 'ok',
-            palavras: estadoGlobalSequencia.palavras, // Retorna o tabuleiro embaralhado
+            palavras: estadoGlobalSequencia.palavras,
             mensagem: 'Jogo iniciado. Encontre a sequência correta de 1 a ' + QUANTIDADE_PALAVRAS
         });
         return;
 
     } else if (action === 'check' && req.method === 'POST') {
-        // 2. Ação: Verificar a Jogada (Lógica Central)
         
-        // Verifica se o jogo foi iniciado
-        if (!estadoGlobalSequencia || estadoGlobalSequencia.ultimoPassoCorreto >= QUANTIDADE_PALAVRAS) {
-            res.status(400).json({ error: 'Jogo não iniciado ou já finalizado. Chame /api/api?action=start' });
+        // Agora bodyData contém os dados do JSON
+        const { wordId, tempoFinal } = bodyData; 
+
+        // 1. Verificação de Estado Crítica
+        if (!estadoGlobalSequencia) {
+            res.status(400).json({ 
+                error: 'Estado do jogo perdido. Tente iniciar o jogo novamente.',
+                sequenciasCorretas: 0,
+                qi: 0
+            });
             return;
         }
-
-        const { wordId, tempoFinal } = req.body;
         
+        // 2. Verificação de Dados
+        if (wordId === undefined || tempoFinal === undefined) {
+             res.status(400).json({ error: 'Dados incompletos na requisição POST. wordId ou tempoFinal ausentes.' });
+             return;
+        }
+        
+        // ... (O restante da sua lógica de 'check' permanece inalterado) ...
         const proximoValorEsperado = estadoGlobalSequencia.sequenciaCorreta[estadoGlobalSequencia.ultimoPassoCorreto];
         
         let resultado = {
@@ -142,26 +110,22 @@ module.exports = async (req, res) => {
             qi: 0,
             tempoFinalSegundos: tempoFinal
         };
-
+        
+        // Lógica de Acerto/Erro...
         if (wordId == proximoValorEsperado) {
-            // ACERTOU!
             estadoGlobalSequencia.ultimoPassoCorreto++;
             resultado.correto = true;
             resultado.sequenciasCorretas = estadoGlobalSequencia.ultimoPassoCorreto;
 
-            // Verifica se a sequência terminou
             if (estadoGlobalSequencia.ultimoPassoCorreto === QUANTIDADE_PALAVRAS) {
                 resultado.jogoFinalizado = true;
                 resultado.qi = calcularQI(resultado.sequenciasCorretas, tempoFinal);
-                // Limpa o estado após a vitória
                 estadoGlobalSequencia = null; 
             }
             
         } else {
-            // ERRO! -> FIM DE JOGO
             resultado.jogoFinalizado = true;
-            resultado.qi = calcularQI(estadoGlobalSequencia.ultimoPassoCorreto, tempoFinal); // QI baseado nas corretas *antes* do erro
-            // Limpa o estado após o erro
+            resultado.qi = calcularQI(estadoGlobalSequencia.ultimoPassoCorreto, tempoFinal);
             estadoGlobalSequencia = null; 
         }
 
@@ -170,6 +134,5 @@ module.exports = async (req, res) => {
 
     }
 
-    // Ação ou Método Inválido
     res.status(404).json({ error: 'Ação ou Método não encontrado.' });
 };
